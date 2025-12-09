@@ -32,6 +32,9 @@ if strcmp(fileType, 'PointCloud')
             RGB = double(RGB) / 255;
         end
         colorData = RGB;
+        fprintf('RGB data loaded. Range: [%.2f, %.2f]\n', min(colorData(:)), max(colorData(:)));
+    elseif useRGB
+        fprintf('Warning: RGB visualization selected but file has fewer than 6 columns.\n');
     end
 
     % Create the point cloud
@@ -669,22 +672,18 @@ fig = figure('Name', 'Interactive Plane Selector', 'NumberTitle', 'off', ...
 ax = axes('Parent', fig, 'Position', [0.05 0.15 0.7 0.8]);
 
 % Downsample points for visualization
-step = max(1, floor(length(x)/50000));
-x_plot = x(1:step:end);
-y_plot = y(1:step:end);
-z_plot = z(1:step:end);
+% User requested no downsampling
+x_plot = x;
+y_plot = y;
+z_plot = z;
 if ~isempty(colorData)
-    if size(colorData, 2) == 3
-        c_plot = colorData(1:step:end, :);
-    else
-        c_plot = colorData(1:step:end);
-    end
+    c_plot = colorData;
 else
     c_plot = z_plot;
 end
 
 % Plot point cloud
-scatter3(ax, x_plot, y_plot, z_plot, 0.5, c_plot, 'filled');
+scatter3(ax, x_plot, y_plot, z_plot, 10, c_plot, '.');
 if useRGB && ~isempty(colorData) && size(colorData, 2) == 1
     colormap(ax, 'gray');
 elseif useRGB && ~isempty(colorData) && size(colorData, 2) == 3
