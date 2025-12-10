@@ -14,8 +14,8 @@ end
 
 % Split into folder, name, extension
 [folder, name, ~] = fileparts(filePath);   
-% Build new filename: original_name + "_srf" + .stl
-stl_out = fullfile(folder, name + ".stl");   
+% Build new filename: original_name + '_srf' + .stl
+stl_out = fullfile(folder, name + '.stl');
 
 %% LOAD DATA BASED ON SELECTION
 if strcmp(fileType, 'PointCloud')
@@ -35,7 +35,7 @@ elseif strcmp(fileType, 'Raster')
     fprintf('Loading Raster file: %s\n', filePath);
     % Use the provided code for raster loading
     georaster = filePath;
-    [A,R] = readgeoraster(georaster,"OutputType","double"); 
+    [A,R] = readgeoraster(georaster,'OutputType','double');
      
     %% GEOGRAPHIC COORDINATES  
     x_step = (R.XWorldLimits(2)-R.XWorldLimits(1))./(R.RasterSize(2)-1);  
@@ -238,7 +238,7 @@ else
 end  
   
 % Save to file   
-paramFile = fullfile(folder, name + "_Plane_coords.txt");   
+paramFile = fullfile(folder, name + '_Plane_coords.txt');
 fid = fopen(paramFile, 'w');   
 if fid ~= -1   
     fprintf(fid, 'Plane 1:\n');   
@@ -291,13 +291,13 @@ if isfield(params, 'enableDownsampling') && params.enableDownsampling
     ptCloudWithGround_Out = removeInvalidPoints(ptCloudWithGround_Out);   
     figure(3)   
     pcshow(ptCloudWithGround_Out.Location)   
-    title("Downsampled Rotated Ground Points")   
+    title('Downsampled Rotated Ground Points')
 else   
     % Skip downsampling and denoising, but ensure invalid points are removed   
     ptCloudWithGround_Out = removeInvalidPoints(ptCloud_rotated);   
     figure(3)   
     pcshow(ptCloudWithGround_Out.Location)   
-    title("Rotated Ground Points (Original Resolution)")   
+    title('Rotated Ground Points (Original Resolution)')
 end   
    
 %%   
@@ -356,6 +356,20 @@ else
     faces = faces_t_o;   
 end   
    
+
+%% SAVE INTERMEDIATE POINT CLOUD
+if isfield(params, 'saveIntermediatePC') && params.saveIntermediatePC
+    [file, savePath] = uiputfile({'*.txt;*.csv;*.xyz', 'Point Cloud Files (*.txt, *.csv, *.xyz)'}, ...
+                             'Save Intermediate Point Cloud', ...
+                             fullfile(folder, name + '_processed.txt'));
+    if file ~= 0
+        outputFile = fullfile(savePath, file);
+        fprintf('Saving processed point cloud to: %s\n', outputFile);
+        writematrix(vertices_top, outputFile);
+    else
+        fprintf('Save Intermediate Point Cloud cancelled.\n');
+    end
+end
 % Flat bottom surface   
 z_flat = min(z_filtered) - z_deep;   
 x_filtered = vertices_top(:,1);   
@@ -1466,6 +1480,11 @@ y_start = y_start - spacing;
 chk_skipCutting = uicontrol('Style', 'checkbox', 'Position', [220 y_start 250 h], ...  
     'String', 'Skip Plane Cutting (Keep Alignment)', 'Value', false);  
   
+y_start = y_start - spacing;
+% Save Intermediate PC Checkbox
+chk_saveIntermediate = uicontrol('Style', 'checkbox', 'Position', [220 y_start 250 h], ...
+    'String', 'Save Intermediate PC (after welding)', 'Value', false);
+
 y_start = y_start - spacing * 2;      
 % Start Button      
 uicontrol('Style', 'pushbutton', 'Position', [150 y_start 200 40], 'String', 'Start Processing', 'FontSize', 12, 'Callback', @startProcessing);      
@@ -1514,6 +1533,7 @@ uicontrol('Style', 'pushbutton', 'Position', [150 y_start 200 40], 'String', 'St
         params.skipAutoInverse = get(chk_skipAutoInv, 'Value');  
         params.translateToOrigin = get(chk_transToOrigin, 'Value');  
         params.skipPlaneCutting = get(chk_skipCutting, 'Value');  
+        params.saveIntermediatePC = get(chk_saveIntermediate, 'Value');
               
         uiresume(fig);      
         close(fig);      
