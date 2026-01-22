@@ -618,13 +618,13 @@ TR_rotated = triangulation(TR.ConnectivityList, TR_rotated_points);
 % Export rotated STL
 
 %% REFINEMENT PHASE
-% Ask user if they want to refine the mesh from a new viewpoint
+% Interactive refinement with persistent UI
 try
-    refine_ans = uiquestdlg('Do you want to refine the mesh from a new viewpoint?', ...
+    refine_ans = uiquestdlg('Do you want to enter the interactive refinement phase?', ...
         'Mesh Refinement', ...
         'Yes', 'No', 'No');
 
-    while strcmp(refine_ans, 'Yes')
+    if strcmp(refine_ans, 'Yes')
         fprintf('Starting interactive refinement...\n');
 
         % Determine which point cloud to use
@@ -634,17 +634,10 @@ try
             cloudToUse = pointCloud(TR_rotated.Points);
         end
 
-        [TR_rotated, isRefined] = refineMeshInteractive(TR_rotated, cloudToUse);
+        % Call the interactive tool
+        TR_rotated = refineMeshInteractive(TR_rotated, cloudToUse);
 
-        if isRefined
-            fprintf('Mesh refined successfully.\n');
-            refine_ans = uiquestdlg('Do you want to perform another refinement?', ...
-                'Refinement Loop', ...
-                'Yes', 'No', 'No');
-        else
-            fprintf('Refinement cancelled.\n');
-            refine_ans = 'No';
-        end
+        fprintf('Interactive refinement completed.\n');
     end
 catch ME
     warning('Error during refinement phase: %s', ME.message);
@@ -1751,170 +1744,236 @@ uiwait(fig);
 end
 
 %% INTERACTIVE REFINEMENT FUNCTION
-function [TR_out, refined] = refineMeshInteractive(TR_in, ptCloud)
-    TR_out = TR_in;
-    refined = false;
+function TR_current = refineMeshInteractive(TR_input, ptCloud)
+    % Initialize current mesh
+    TR_current = TR_input;
 
-    % Create figure
-    fig = figure('Name', 'Refinement View Selector', 'NumberTitle', 'off');
-    ax = axes('Parent', fig);
-    trisurf(TR_in, 'FaceColor', [0.8 0.8 1], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
+    % Create persistent figure
+    fig = figure('Name', 'Interactive Mesh Refinement', 'NumberTitle', 'off', ...
+        'Units', 'normalized', 'Position', [0.1 0.1 0.8 0.8]);
+
+    % Create axes
+    ax = axes('Parent', fig, 'Units', 'normalized', 'Position', [0.05 0.05 0.75 0.9]);
+
+    % Initial Plot
+    hSurf = trisurf(TR_current, 'FaceColor', [0.8 0.8 1], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
     hold(ax, 'on');
     axis(ax, 'equal');
     xlabel(ax, 'X'); ylabel(ax, 'Y'); zlabel(ax, 'Z');
-    title(ax, 'Rotate to desired view, then press Capture');
+    title(ax, 'Rotate to desired view, then press "Refine from View"');
     camlight(ax, 'headlight');
     lighting(ax, 'gouraud');
     rotate3d(ax, 'on');
 
-    % Add a button to capture
-    uicontrol('Style', 'pushbutton', 'String', 'Capture & Refine', ...
-        'Position', [20 20 150 40], ...
-        'Callback', @(src,evt) uiresume(fig));
+    % UI Controls (Right Anchored)
+    % Panel for buttons
+    btnPanel = uipanel('Parent', fig, 'Units', 'normalized', 'Position', [0.82 0.05 0.16 0.9]);
 
+    uicontrol('Parent', btnPanel, 'Style', 'pushbutton', 'String', 'Refine from View', ...
+        'Units', 'normalized', 'Position', [0.1 0.85 0.8 0.1], ...
+        'FontSize', 12, 'FontWeight', 'bold', ...
+        'Callback', @refineCallback);
+
+    uicontrol('Parent', btnPanel, 'Style', 'pushbutton', 'String', 'Undo Last', ...
+        'Units', 'normalized', 'Position', [0.1 0.70 0.8 0.1], ...
+        'FontSize', 10, ...
+        'Callback', @undoCallback);
+
+    uicontrol('Parent', btnPanel, 'Style', 'pushbutton', 'String', 'Complete & Exit', ...
+        'Units', 'normalized', 'Position', [0.1 0.05 0.8 0.1], ...
+        'FontSize', 12, 'FontWeight', 'bold', ...
+        'Callback', @exitCallback);
+
+    statusText = uicontrol('Parent', btnPanel, 'Style', 'text', 'String', 'Ready.', ...
+        'Units', 'normalized', 'Position', [0.1 0.5 0.8 0.15], ...
+        'HorizontalAlignment', 'left', 'FontSize', 10);
+
+    % History stack for Undo
+    meshHistory = {TR_current};
+
+    % Wait until figure is closed or Resume called
     uiwait(fig);
 
-    if ~ishandle(fig)
-        return;
+    if ishandle(fig)
+        close(fig);
     end
 
-    % Get view direction
-    [cx, cy, cz] = campos(ax);
-    [tx, ty, tz] = camtarget(ax);
-    viewDir = [tx-cx, ty-cy, tz-cz];
-    viewDir = viewDir / norm(viewDir);
-    camUp = camup(ax);
+    % --- Callbacks ---
 
-    delete(fig);
+    function refineCallback(~, ~)
+        set(statusText, 'String', 'Processing...');
+        drawnow;
 
-    fprintf('View captured. Direction: [%.4f, %.4f, %.4f]\n', viewDir);
+        try
+            % Capture View
+            [cx, cy, cz] = campos(ax);
+            [tx, ty, tz] = camtarget(ax);
+            viewDir = [tx-cx, ty-cy, tz-cz];
+            viewDir = viewDir / norm(viewDir);
+            camUp = camup(ax);
 
-    % 1. Identify "Shadow" (Keep) vs "Visible" (Replace)
-    fn = faceNormal(TR_in);
-    dotProd = fn * viewDir';
+            % Compute Refinement
+            [TR_new, success, msg] = computeRefinement(TR_current, ptCloud, viewDir, camUp);
 
-    % Visible faces (facing camera) have dot < 0.
-    visibleIdx = find(dotProd < 0);
-    keepIdx = find(dotProd >= 0);
+            if success
+                % Update History
+                meshHistory{end+1} = TR_new;
+                TR_current = TR_new;
 
-    if isempty(visibleIdx)
-        warning('No visible faces found from this angle.');
-        return;
+                % Update Plot
+                delete(hSurf);
+                hSurf = trisurf(TR_current, 'Parent', ax, 'FaceColor', [0.8 0.8 1], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
+
+                % Check for Holes
+                % freeBoundary returns boundary edges. If strictly watertight solid, should be empty.
+                % If surface, it has boundary.
+                % Compare boundary with previous?
+                % For now, just report status.
+                b = freeBoundary(TR_current);
+                numOpenEdges = size(b, 1);
+
+                set(statusText, 'String', sprintf('Success!\nAdded %d vertices.\nOpen Edges: %d', ...
+                    size(TR_current.Points,1) - size(meshHistory{end-1}.Points,1), numOpenEdges));
+            else
+                set(statusText, 'String', sprintf('Failed:\n%s', msg));
+                warndlg(msg, 'Refinement Failed');
+            end
+        catch ME
+            set(statusText, 'String', 'Error Occurred');
+            errordlg(ME.message, 'Error');
+        end
     end
 
-    faces_keep = TR_in.ConnectivityList(keepIdx, :);
-    faces_remove = TR_in.ConnectivityList(visibleIdx, :);
+    function undoCallback(~, ~)
+        if length(meshHistory) > 1
+            meshHistory(end) = [];
+            TR_current = meshHistory{end};
 
-    % 2. Extract Boundary of the "Visible" patch
-    % The boundary of the removed patch is the constraint.
-    TR_vis = triangulation(faces_remove, TR_in.Points);
-    boundary_edges = freeBoundary(TR_vis); % Indices into TR_in.Points
+            % Update Plot
+            delete(hSurf);
+            hSurf = trisurf(TR_current, 'Parent', ax, 'FaceColor', [0.8 0.8 1], 'EdgeColor', 'none', 'FaceAlpha', 0.8);
 
-    if isempty(boundary_edges)
-        warning('Could not determine boundary of visible patch.');
-        return;
+            set(statusText, 'String', 'Undone last step.');
+        else
+            set(statusText, 'String', 'Nothing to undo.');
+        end
     end
 
-    % 3. Setup Projection
-    z_prime = -viewDir;
-    x_prime = cross(camUp, z_prime);
-    if norm(x_prime) < 1e-6, x_prime = cross([1 0 0], z_prime); end
-    x_prime = x_prime / norm(x_prime);
-    y_prime = cross(z_prime, x_prime);
-    y_prime = y_prime / norm(y_prime);
-
-    R = [x_prime; y_prime; z_prime];
-
-    % 4. Prepare Points for Triangulation
-    % We want to triangulate: Boundary Vertices + Cloud Points inside Boundary
-
-    % Get unique boundary vertices
-    boundary_indices = unique(boundary_edges(:));
-    boundary_pts_3d = TR_in.Points(boundary_indices, :);
-
-    % Project boundary points to 2D
-    boundary_pts_rot = (R * boundary_pts_3d')';
-    boundary_pts_2d = boundary_pts_rot(:, 1:2);
-
-    % Map global indices to local indices for constraints
-    [~, loc_edges_1] = ismember(boundary_edges(:,1), boundary_indices);
-    [~, loc_edges_2] = ismember(boundary_edges(:,2), boundary_indices);
-    constraints_local = [loc_edges_1, loc_edges_2];
-
-    % Filter Point Cloud
-    cloud_pts_3d = ptCloud.Location;
-    cloud_pts_rot = (R * cloud_pts_3d')';
-    cloud_pts_2d = cloud_pts_rot(:, 1:2);
-
-    % Filter points using Delaunay on boundary
-    try
-        DT_bound = delaunayTriangulation(boundary_pts_2d, constraints_local);
-        tri_idx = pointLocation(DT_bound, cloud_pts_2d);
-        % Check if points are inside the boundary
-        % isInterior returns mask for TRIANGLES.
-        tf = isInterior(DT_bound);
-        valid_tri_mask = ~isnan(tri_idx);
-        in_poly_mask = false(size(cloud_pts_2d, 1), 1);
-        in_poly_mask(valid_tri_mask) = tf(tri_idx(valid_tri_mask));
-    catch
-        warning('Failed to process boundary for point filtering.');
-        return;
+    function exitCallback(~, ~)
+        % Validate mesh?
+        b = freeBoundary(TR_current);
+        if ~isempty(b)
+            ans_valid = questdlg(sprintf('Mesh has %d open edges (holes). Exit anyway?', size(b,1)), ...
+                'Mesh Validity Check', 'Yes', 'No', 'No');
+            if strcmp(ans_valid, 'No')
+                return;
+            end
+        end
+        uiresume(fig);
     end
 
-    cloud_subset_indices = find(in_poly_mask);
-    cloud_subset_3d = cloud_pts_3d(cloud_subset_indices, :);
-    cloud_subset_2d = cloud_pts_2d(cloud_subset_indices, :);
+    function [TR_out, success, msg] = computeRefinement(TR_in, ptCloud, viewDir, camUp)
+        TR_out = [];
+        success = false;
+        msg = '';
 
-    fprintf('Using %d points from cloud for refinement.\n', length(cloud_subset_indices));
+        % 1. Identify "Shadow" (Keep) vs "Visible" (Replace)
+        fn = faceNormal(TR_in);
+        dotProd = fn * viewDir';
 
-    % 5. Perform Final Triangulation
-    % Points: [Boundary_Points; Cloud_Subset_Points]
-    all_pts_2d = [boundary_pts_2d; cloud_subset_2d];
+        visibleIdx = find(dotProd < 0);
+        keepIdx = find(dotProd >= 0);
 
-    % Constraints are still valid (indices 1 to N_bound)
-    try
-        DT_final = delaunayTriangulation(all_pts_2d, constraints_local);
-    catch ME
-        warning('Final triangulation failed: %s', ME.message);
-        return;
+        if isempty(visibleIdx)
+            msg = 'No visible faces from this angle.';
+            return;
+        end
+
+        faces_keep = TR_in.ConnectivityList(keepIdx, :);
+        faces_remove = TR_in.ConnectivityList(visibleIdx, :);
+
+        % 2. Extract Boundary of the "Visible" patch
+        TR_vis = triangulation(faces_remove, TR_in.Points);
+        boundary_edges = freeBoundary(TR_vis);
+
+        if isempty(boundary_edges)
+            msg = 'Could not determine boundary of visible patch.';
+            return;
+        end
+
+        % 3. Setup Projection
+        z_prime = -viewDir;
+        x_prime = cross(camUp, z_prime);
+        if norm(x_prime) < 1e-6, x_prime = cross([1 0 0], z_prime); end
+        x_prime = x_prime / norm(x_prime);
+        y_prime = cross(z_prime, x_prime);
+        y_prime = y_prime / norm(y_prime);
+
+        R = [x_prime; y_prime; z_prime];
+
+        % 4. Prepare Points
+        boundary_indices = unique(boundary_edges(:));
+        boundary_pts_3d = TR_in.Points(boundary_indices, :);
+        boundary_pts_rot = (R * boundary_pts_3d')';
+        boundary_pts_2d = boundary_pts_rot(:, 1:2);
+
+        [~, loc_edges_1] = ismember(boundary_edges(:,1), boundary_indices);
+        [~, loc_edges_2] = ismember(boundary_edges(:,2), boundary_indices);
+        constraints_local = [loc_edges_1, loc_edges_2];
+
+        cloud_pts_3d = ptCloud.Location;
+        cloud_pts_rot = (R * cloud_pts_3d')';
+        cloud_pts_2d = cloud_pts_rot(:, 1:2);
+
+        % Filter points using Delaunay on boundary
+        try
+            DT_bound = delaunayTriangulation(boundary_pts_2d, constraints_local);
+            tri_idx = pointLocation(DT_bound, cloud_pts_2d);
+            tf = isInterior(DT_bound);
+            valid_tri_mask = ~isnan(tri_idx);
+            in_poly_mask = false(size(cloud_pts_2d, 1), 1);
+            in_poly_mask(valid_tri_mask) = tf(tri_idx(valid_tri_mask));
+        catch
+            msg = 'Failed to process boundary constraints.';
+            return;
+        end
+
+        cloud_subset_indices = find(in_poly_mask);
+        cloud_subset_3d = cloud_pts_3d(cloud_subset_indices, :);
+        cloud_subset_2d = cloud_pts_2d(cloud_subset_indices, :);
+
+        % 5. Perform Final Triangulation
+        all_pts_2d = [boundary_pts_2d; cloud_subset_2d];
+
+        try
+            DT_final = delaunayTriangulation(all_pts_2d, constraints_local);
+        catch ME
+            msg = ['Triangulation failed: ' ME.message];
+            return;
+        end
+
+        is_inside = isInterior(DT_final);
+        new_faces_local = DT_final.ConnectivityList(is_inside, :);
+
+        % 6. Map back to Global Indices
+        num_orig_verts = size(TR_in.Points, 1);
+        num_cloud = length(cloud_subset_indices);
+
+        source_indices_input = [boundary_indices; (num_orig_verts + (1:num_cloud))'];
+
+        [found, loc] = ismember(DT_final.Points, all_pts_2d, 'rows');
+        if ~all(found)
+            msg = 'Point mapping error during refinement.';
+            return;
+        end
+
+        dt_to_global = source_indices_input(loc);
+        new_faces_global = dt_to_global(new_faces_local);
+
+        final_faces = [faces_keep; new_faces_global];
+        final_vertices = [TR_in.Points; cloud_subset_3d];
+
+        TR_out = triangulation(final_faces, final_vertices);
+        success = true;
     end
-
-    % Select interior triangles
-    is_inside = isInterior(DT_final);
-    new_faces_local = DT_final.ConnectivityList(is_inside, :);
-
-    % 6. Map back to Global Indices
-
-    num_orig_verts = size(TR_in.Points, 1);
-    num_bound = length(boundary_indices);
-    num_cloud = length(cloud_subset_indices);
-
-    % Source indices map input order to Global Mesh indices
-    % 1..N_bound -> boundary_indices (Existing mesh vertices)
-    % N_bound+1.. -> N_orig+1.. (New appended vertices)
-    source_indices_input = [boundary_indices; (num_orig_verts + (1:num_cloud))'];
-
-    % Map DT_final.Points to all_pts_2d to find permutation
-    [found, loc] = ismember(DT_final.Points, all_pts_2d, 'rows');
-
-    if ~all(found)
-        warning('Some points lost in triangulation mapping.');
-        return;
-    end
-
-    dt_to_global = source_indices_input(loc);
-    new_faces_global = dt_to_global(new_faces_local);
-
-    % 7. Construct Output
-    final_faces = [faces_keep; new_faces_global];
-    final_vertices = [TR_in.Points; cloud_subset_3d];
-
-    TR_out = triangulation(final_faces, final_vertices);
-    refined = true;
-
-    % Visualization
-    figure('Name', 'Refined Mesh Preview');
-    trisurf(TR_out, 'FaceColor', [0.8 1 0.8], 'EdgeColor', 'none');
-    axis equal; lighting gouraud; camlight;
-    title('Refined Mesh');
 end
