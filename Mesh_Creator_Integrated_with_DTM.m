@@ -4,7 +4,7 @@ close all
 
 %% FILE SELECTION UI
 % Create a UI to select the input file and its type
-[filePath, fileType, useRGB] = fileSelectionUI();
+[filePath, fileType, useRGB, workflowType] = fileSelectionUI();
 
 % Check if a file was selected
 if isempty(filePath)
@@ -139,6 +139,71 @@ z_deep = params.z_deep;
 interpolation = params.interpolationMethod;
 extrapolation = params.extrapolationMethod;
 refcycle = params.refcycle;
+
+% Check Workflow Type
+if exist('workflowType', 'var') && strcmp(workflowType, 'Direct3D')
+    fprintf('Starting Direct 3D Mesh Workflow (Alpha Shape)...\n');
+
+    x = filteredPtCloud.Location(:,1);
+    y = filteredPtCloud.Location(:,2);
+    z = filteredPtCloud.Location(:,3);
+
+    % Downsampling (Optional but recommended for speed)
+    if isfield(params, 'enableDownsampling') && params.enableDownsampling
+        fprintf('Downsampling point cloud (Step: %.2f)...\n', gridStep);
+        ptCloud_down = pcdownsample(filteredPtCloud, 'gridAverage', gridStep);
+        if isfield(params, 'enableOverlapFilter') % Reuse this flag or assume denoise
+             ptCloud_down = pcdenoise(ptCloud_down);
+        end
+        x = ptCloud_down.Location(:,1);
+        y = ptCloud_down.Location(:,2);
+        z = ptCloud_down.Location(:,3);
+    end
+
+    % Alpha Shape Generation
+    alphaRadius = params.alphaRadius;
+    fprintf('Generating 3D Mesh using Alpha Shape (Radius: %.2f)...\n', alphaRadius);
+
+    % Ensure unique points
+    pts = [x, y, z];
+    pts = unique(pts, 'rows');
+
+    if size(pts, 1) < 4
+        error('Not enough points to generate a 3D mesh.');
+    end
+
+    try
+        shp = alphaShape(pts(:,1), pts(:,2), pts(:,3), alphaRadius);
+
+        % Extract Boundary Facets (The Surface)
+        [faces, vertices] = boundaryFacets(shp);
+
+        if isempty(faces)
+            warning('Alpha shape generation resulted in empty mesh. Try increasing Alpha Radius.');
+            % Fallback to convex hull if alpha failed? Or just error.
+            error('Alpha shape empty.');
+        end
+
+        % Create Triangulation
+        TR_rotated = triangulation(faces, vertices);
+
+        % Save STL
+        stlwrite(TR_rotated, stl_out);
+        fprintf('3D Mesh saved to %s\n', stl_out);
+
+        % Visualization
+        figure('Name', 'Direct 3D Mesh');
+        trisurf(TR_rotated, 'FaceColor', [0.8 0.8 1], 'EdgeColor', 'k', 'FaceAlpha', 0.8);
+        axis equal; grid on; xlabel('X'); ylabel('Y'); zlabel('Z');
+        title(['Direct 3D Mesh (Alpha: ' num2str(alphaRadius) ')']);
+
+        % Skip the rest of the script
+        return;
+
+    catch ME
+        error('Error during 3D meshing: %s', ME.message);
+    end
+end
 
 % Distance between cutting planes (in meters)
 planeDistance = params.planeDistance; % Distance between the two parallel planes
@@ -665,16 +730,17 @@ title('Solid Mesh with Edge Length Limit');
 view(3);
 
 %% FILE SELECTION UI FUNCTION
-function [filePath, fileType, useRGB] = fileSelectionUI()
+function [filePath, fileType, useRGB, workflowType] = fileSelectionUI()
 % Create figure for file selection
 fig = figure('Name', 'Input File Selection', 'NumberTitle', 'off', ...
-'Position', [300 300 500 250], 'MenuBar', 'none', 'ToolBar', 'none', ...
+'Position', [300 300 500 350], 'MenuBar', 'none', 'ToolBar', 'none', ...
 'Resize', 'off');
 
 % Initialize outputs
 filePath = '';
 fileType = '';
 useRGB = false;
+workflowType = 'Standard'; % Default
 
 % Default selection
 currentType = 'PointCloud';
@@ -682,10 +748,10 @@ validSelection = false;
 
 % UI Layout
 uicontrol('Style', 'text', 'String', '1. Select Input File Type and File', ...
-    'Position', [50 200 400 30], 'FontSize', 12, 'FontWeight', 'bold');
+    'Position', [50 300 400 30], 'FontSize', 12, 'FontWeight', 'bold');
 
 % Radio Button Group for File Type
-bg = uibuttongroup('Parent', fig, 'Position', [0.1 0.5 0.8 0.25], ...
+bg = uibuttongroup('Parent', fig, 'Position', [0.1 0.7 0.8 0.15], ...
     'Title', 'File Type', 'SelectionChangedFcn', @typeChanged);
 
 uicontrol(bg, 'Style', 'radiobutton', 'String', 'Point Cloud (.txt, .csv, .xyz)', ...
@@ -696,22 +762,27 @@ uicontrol(bg, 'Style', 'radiobutton', 'String', 'Raster (.tif, .tiff)', ...
 
 % File Path Display
 uicontrol('Style', 'text', 'String', 'Selected File:', ...
-    'Position', [50 100 80 20], 'HorizontalAlignment', 'left');
+    'Position', [50 200 80 20], 'HorizontalAlignment', 'left');
 
-edit_path = uicontrol('Style', 'edit', 'Position', [130 100 250 25], ...
+edit_path = uicontrol('Style', 'edit', 'Position', [130 200 250 25], ...
     'String', 'No file selected', 'Enable', 'inactive');
 
 % Browse Button
 uicontrol('Style', 'pushbutton', 'String', '...', ...
-    'Position', [390 100 60 25], 'Callback', @browseFile);
+    'Position', [390 200 60 25], 'Callback', @browseFile);
 
 % Checkbox for RGB/Hillshade
 chk_rgb = uicontrol('Style', 'checkbox', 'String', 'Visualize RGB / Hillshade', ...
-    'Position', [50 80 200 20], 'Value', false);
+    'Position', [50 170 200 20], 'Value', false);
+
+% Checkbox for Direct 3D Mesh Workflow
+chk_direct3d = uicontrol('Style', 'checkbox', 'String', 'Direct 3D Mesh (Alpha Shape)', ...
+    'Position', [50 140 250 20], 'Value', false, ...
+    'Callback', @toggleWorkflow);
 
 % Start/Confirm Button
 btn_ok = uicontrol('Style', 'pushbutton', 'String', 'Start Processing', ...
-    'Position', [150 30 200 40], 'Enable', 'off', ...
+    'Position', [150 50 200 40], 'Enable', 'off', ...
     'Callback', @confirm);
 
 % Wait for user interaction
@@ -758,10 +829,23 @@ function browseFile(~, ~)
     end
 end
 
+function toggleWorkflow(src, ~)
+    if get(src, 'Value')
+        workflowType = 'Direct3D';
+    else
+        workflowType = 'Standard';
+    end
+end
+
 function confirm(~, ~)
     fileType = currentType;
     validSelection = true;
     useRGB = get(chk_rgb, 'Value');
+    if get(chk_direct3d, 'Value')
+        workflowType = 'Direct3D';
+    else
+        workflowType = 'Standard';
+    end
     uiresume(fig);
 end
 end
@@ -1664,6 +1748,11 @@ y_start = y_start - spacing;
 uicontrol('Style', 'text', 'Position', [50 y_start 150 h], 'String', 'Overlap Radius:', 'HorizontalAlignment', 'right');
 edit_overlapRad = uicontrol('Style', 'edit', 'Position', [220 y_start 100 h], 'String', '0.5', 'Enable', 'off');
 
+y_start = y_start - spacing;
+% Alpha Radius (For Direct 3D)
+uicontrol('Style', 'text', 'Position', [50 y_start 150 h], 'String', 'Alpha Radius (3D):', 'HorizontalAlignment', 'right');
+edit_alphaRad = uicontrol('Style', 'edit', 'Position', [220 y_start 100 h], 'String', '10.0');
+
 y_start = y_start - spacing * 2;
 % Start Button
 uicontrol('Style', 'pushbutton', 'Position', [150 y_start 200 40], 'String', 'Start Processing', 'FontSize', 12, 'Callback', @startProcessing);
@@ -1735,6 +1824,7 @@ params.skipPlaneCutting = get(chk_skipCutting, 'Value');
 params.enableOverlapFilter = get(chk_overlap, 'Value');
 params.overlapRadius = str2double(get(edit_overlapRad, 'String'));
 params.createSolidMesh = get(chk_solid, 'Value');
+params.alphaRadius = str2double(get(edit_alphaRad, 'String'));
 
     uiresume(fig);
     close(fig);
