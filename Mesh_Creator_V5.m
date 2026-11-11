@@ -196,188 +196,206 @@ refcycle        = params.refcycle;
 planeDistance = params.planeDistance;
 
 %% INTERACTIVE PLANE SELECTION (MOVED HERE - RIGHT AFTER READING POINT CLOUD)
-fprintf('\n=== PLANE SELECTION ===\n');
-% Get initial point cloud data 
-x_initial = filteredPtCloud.Location(:,1); 
-y_initial = filteredPtCloud.Location(:,2); 
-z_initial = filteredPtCloud.Location(:,3); 
- 
-% Call interactive plane selector with editable distance 
-[planePosition, planeNormal, planeDistance, targetAxis] = interactivePlaneSelector(x_initial, y_initial, z_initial, planeDistance, colorData, useRGB); 
- 
-% Enforce vertical planes (normal z-component = 0) 
-if abs(planeNormal(3)) > 1e-6 
-    fprintf('Warning: Plane was not vertical. Forcing verticality.\n'); 
-    planeNormal(3) = 0; 
-    planeNormal = planeNormal / norm(planeNormal); 
-end 
- 
-% Calculate Dip and Dip Direction 
-calcNormal = planeNormal; 
-if calcNormal(3) < 0 
-    calcNormal = -calcNormal; 
-end 
-dip = acosd(calcNormal(3)); 
-% Calculate math angle from X axis (CCW) 
-theta = atan2d(calcNormal(2), calcNormal(1)); 
-% Convert to Azimuth (Clockwise from North) 
-dipDir = mod(90 - theta, 360); 
- 
-% Second plane position 
-planePosition2 = planePosition + planeDistance * planeNormal; 
- 
-% Cut the initial point cloud between the two planes 
-planePosExpanded = repmat(planePosition, length(x_initial), 1); 
-normalExpanded = repmat(planeNormal, length(x_initial), 1); 
-d1 = dot([x_initial, y_initial, z_initial] - planePosExpanded, normalExpanded, 2); 
-d2 = dot([x_initial, y_initial, z_initial] - (planePosExpanded + planeDistance * normalExpanded), normalExpanded, 2); 
- 
-% Keep points between the two planes 
-cutIndices = (d1 >= 0) & (d2 <= 0); 
- 
-% Override cutting if requested (Skip Plane Cutting, but keep alignment) 
-if isfield(params, 'skipPlaneCutting') && params.skipPlaneCutting 
-    fprintf('Skipping Plane Cutting as requested (Keeping Alignment). All points retained.\n'); 
-    cutIndices = true(length(x_initial), 1); 
-end 
- 
-fprintf('Original points: %d\n', length(x_initial)); 
-fprintf('Points after plane cutting: %d\n', sum(cutIndices)); 
- 
-% Validate cut results
-if sum(cutIndices) < 3
-    error('Plane cutting removed too many points. Adjust plane position or distance.');
-end
+% Get initial point cloud data (kept intact so the plane can be re-selected)
+fullPtCloud = filteredPtCloud;
+x_initial = fullPtCloud.Location(:,1);
+y_initial = fullPtCloud.Location(:,2);
+z_initial = fullPtCloud.Location(:,3);
 
-% Apply the cut to the point cloud 
-filteredPtCloud = pointCloud(filteredPtCloud.Location(cutIndices, :)); 
- 
-%% ROTATION AROUND Z-AXIS ONLY - TO ALIGN WITH X OR Y AXIS 
-fprintf('\n=== ALIGNMENT ROTATION ===\n');
-% Goal: Rotate the point cloud around Z-axis to align strike direction with X or Y axis 
-% using the plane dip and dip direction. 
- 
-% Convert target axis to Azimuth 
-targetAz = []; 
-if ischar(targetAxis) || isstring(targetAxis) 
-    if strcmpi(targetAxis, 'X') || strcmpi(targetAxis, 'X-axis') 
-        targetAz = 90; % East 
-    elseif strcmpi(targetAxis, 'Y') || strcmpi(targetAxis, 'Y-axis') 
-        targetAz = 0; % North 
+% Plane selection -> cut -> alignment -> manual rotation. The manual
+% rotation window can send the user back here to choose a new plane.
+planeState = [];
+% Last confirmed planes, shared between runs ("Load Last Planes" button)
+lastPlaneFile = fullfile(fileparts(mfilename('fullpath')), 'last_plane_state.mat');
+while true
+    fprintf('\n=== PLANE SELECTION ===\n');
+
+    % Call interactive plane selector with editable distance (restores the previous choice when going back)
+    [planePosition, planeNormal, planeDistance, targetAxis, planeState] = interactivePlaneSelector(x_initial, y_initial, z_initial, planeDistance, colorData, useRGB, planeState, lastPlaneFile);
+    try
+        save(lastPlaneFile, 'planeState');
+    catch ME
+        warning('Could not save last plane state to %s: %s', lastPlaneFile, ME.message);
+    end
+     
+    % Enforce vertical planes (normal z-component = 0) 
+    if abs(planeNormal(3)) > 1e-6 
+        fprintf('Warning: Plane was not vertical. Forcing verticality.\n'); 
+        planeNormal(3) = 0; 
+        planeNormal = planeNormal / norm(planeNormal); 
     end 
-end 
- 
-if isempty(targetAz) 
-    % If 'Minimal' or unrecognized, do not apply alignment rotation 
-    R = eye(3); 
-    rotation_angle_deg = 0; 
-    fprintf('Target axis is Minimal or unset - no alignment rotation applied\n'); 
-else 
-    % Calculate Strike Azimuth from Dip Direction 
-    strikeAz = dipDir; 
      
-    % Calculate rotation required (CCW)      
-    rotation_angle_deg = targetAz - strikeAz;      
+    % Calculate Dip and Dip Direction 
+    calcNormal = planeNormal; 
+    if calcNormal(3) < 0 
+        calcNormal = -calcNormal; 
+    end 
+    dip = acosd(calcNormal(3)); 
+    % Calculate math angle from X axis (CCW) 
+    theta = atan2d(calcNormal(2), calcNormal(1)); 
+    % Convert to Azimuth (Clockwise from North) 
+    dipDir = mod(90 - theta, 360); 
+     
+    % Second plane position 
+    planePosition2 = planePosition + planeDistance * planeNormal; 
+     
+    % Cut the initial point cloud between the two planes 
+    planePosExpanded = repmat(planePosition, length(x_initial), 1); 
+    normalExpanded = repmat(planeNormal, length(x_initial), 1); 
+    d1 = dot([x_initial, y_initial, z_initial] - planePosExpanded, normalExpanded, 2); 
+    d2 = dot([x_initial, y_initial, z_initial] - (planePosExpanded + planeDistance * normalExpanded), normalExpanded, 2); 
+     
+    % Keep points between the two planes 
+    cutIndices = (d1 >= 0) & (d2 <= 0); 
+     
+    % Override cutting if requested (Skip Plane Cutting, but keep alignment) 
+    if isfield(params, 'skipPlaneCutting') && params.skipPlaneCutting 
+        fprintf('Skipping Plane Cutting as requested (Keeping Alignment). All points retained.\n'); 
+        cutIndices = true(length(x_initial), 1); 
+    end 
+     
+    fprintf('Original points: %d\n', length(x_initial)); 
+    fprintf('Points after plane cutting: %d\n', sum(cutIndices)); 
+     
+    % Validate cut results
+    if sum(cutIndices) < 3
+        warning('Plane cutting left fewer than 3 points. Adjust plane position or distance.');
+        continue;
+    end
+
+    % Apply the cut to the point cloud
+    filteredPtCloud = pointCloud(fullPtCloud.Location(cutIndices, :));
+     
+    %% ROTATION AROUND Z-AXIS ONLY - TO ALIGN WITH X OR Y AXIS 
+    fprintf('\n=== ALIGNMENT ROTATION ===\n');
+    % Goal: Rotate the point cloud around Z-axis to align strike direction with X or Y axis 
+    % using the plane dip and dip direction. 
+     
+    % Convert target axis to Azimuth 
+    targetAz = []; 
+    if ischar(targetAxis) || isstring(targetAxis) 
+        if strcmpi(targetAxis, 'X') || strcmpi(targetAxis, 'X-axis') 
+            targetAz = 90; % East 
+        elseif strcmpi(targetAxis, 'Y') || strcmpi(targetAxis, 'Y-axis') 
+            targetAz = 0; % North 
+        end 
+    end 
+     
+    if isempty(targetAz) 
+        % If 'Minimal' or unrecognized, do not apply alignment rotation 
+        R = eye(3); 
+        rotation_angle_deg = 0; 
+        fprintf('Target axis is Minimal or unset - no alignment rotation applied\n'); 
+    else 
+        % Calculate Strike Azimuth from Dip Direction 
+        strikeAz = dipDir; 
          
-    % Convert to radians      
-    angle_z = deg2rad(rotation_angle_deg);      
-      
-    % Rotation matrix around Z-axis      
-    R = [cos(angle_z), -sin(angle_z), 0;      
-         sin(angle_z),  cos(angle_z), 0;      
-         0,             0,             1];      
-           
-    fprintf('Aligning Strike (%.2f°) to Target (%.2f°)\n', strikeAz, targetAz);      
-    fprintf('Rotation around Z-axis: %.2f degrees\n', rotation_angle_deg);      
-end 
- 
-% Create the affine transformation 
-affine_matrix = eye(4); 
-affine_matrix(1:3, 1:3) = R'; % Use transpose for pctransform (row vectors) 
-tform_align = affinetform3d(affine_matrix); 
- 
-% Apply the transformation 
-ptCloud_rotated = pctransform(filteredPtCloud, tform_align); 
- 
-% --- Translation to Origin (AFTER Rotation) --- 
-translation_vec = [0, 0, 0]; 
-if isfield(params, 'translateToOrigin') && params.translateToOrigin 
-    % Check if point cloud has valid data 
-    if ~isempty(ptCloud_rotated.Location) 
-        % Calculate translation vector (centroid to origin), ignoring NaNs 
-        translation_vec = -mean(ptCloud_rotated.Location, 1, 'omitnan'); 
+        % Rotation required (CCW from +X). Azimuths grow clockwise, so the CCW
+        % angle that brings strikeAz onto targetAz is strikeAz - targetAz
+        rotation_angle_deg = strikeAz - targetAz;
+             
+        % Convert to radians      
+        angle_z = deg2rad(rotation_angle_deg);      
+          
+        % Rotation matrix around Z-axis      
+        R = [cos(angle_z), -sin(angle_z), 0;      
+             sin(angle_z),  cos(angle_z), 0;      
+             0,             0,             1];      
+               
+        fprintf('Aligning Strike (%.2f°) to Target (%.2f°)\n', strikeAz, targetAz);      
+        fprintf('Rotation around Z-axis: %.2f degrees\n', rotation_angle_deg);      
+    end 
      
-        if any(isnan(translation_vec))     
-            translation_vec = [0, 0, 0];     
-            warning('Calculated translation vector contains NaNs. Skipping translation.');     
+    % Create the affine transformation 
+    affine_matrix = eye(4); 
+    affine_matrix(1:3, 1:3) = R; % affinetform3d uses column vectors: A = [R t; 0 0 0 1]
+    tform_align = affinetform3d(affine_matrix); 
+     
+    % Apply the transformation 
+    ptCloud_rotated = pctransform(filteredPtCloud, tform_align); 
+     
+    % --- Translation to Origin (AFTER Rotation) --- 
+    translation_vec = [0, 0, 0]; 
+    if isfield(params, 'translateToOrigin') && params.translateToOrigin 
+        % Check if point cloud has valid data 
+        if ~isempty(ptCloud_rotated.Location) 
+            % Calculate translation vector (centroid to origin), ignoring NaNs 
+            translation_vec = -mean(ptCloud_rotated.Location, 1, 'omitnan'); 
+         
+            if any(isnan(translation_vec))     
+                translation_vec = [0, 0, 0];     
+                warning('Calculated translation vector contains NaNs. Skipping translation.');     
+            else     
+                fprintf('Translating point cloud to origin. Vector: [%.4f, %.4f, %.4f]\n', translation_vec);     
+            end     
         else     
-            fprintf('Translating point cloud to origin. Vector: [%.4f, %.4f, %.4f]\n', translation_vec);     
+            translation_vec = [0, 0, 0];     
+            warning('Point cloud is empty. Skipping translation.');     
         end     
-    else     
-        translation_vec = [0, 0, 0];     
-        warning('Point cloud is empty. Skipping translation.');     
-    end     
+             
+        % Create translation transform     
+        trans_matrix = eye(4);     
+        trans_matrix(1:3, 4) = translation_vec;     
+        tform_trans = affinetform3d(trans_matrix);     
          
-    % Create translation transform     
-    trans_matrix = eye(4);     
-    trans_matrix(1:3, 4) = translation_vec;     
-    tform_trans = affinetform3d(trans_matrix);     
+        % Apply translation     
+        if ~all(translation_vec == 0)     
+            ptCloud_rotated = pctransform(ptCloud_rotated, tform_trans);     
+        end     
+             
+        % Alignment first, then translation (column-vector convention: A_trans * A_align)
+        tform_combined = affinetform3d(tform_trans.A * tform_align.A);
+             
+        % tform_back is the inverse of the total automatic alignment/translation     
+        tform_back = invert(tform_combined);     
+    else 
+        % Store the inverse transformation for rotating back later 
+        tform_back = invert(tform_align); 
+    end 
      
-    % Apply translation     
-    if ~all(translation_vec == 0)     
-        ptCloud_rotated = pctransform(ptCloud_rotated, tform_trans);     
-    end     
+    % Save to file 
+    fprintf('Saving plane coordinates...\n');
+    paramFile = fullfile(folder, name + "_Plane_coords.txt"); 
+    fid = fopen(paramFile, 'w'); 
+    if fid ~= -1 
+        fprintf(fid, 'Plane 1:\n'); 
+        fprintf(fid, 'Position (X, Y, Z): %.4f, %.4f, %.4f\n', planePosition(1), planePosition(2), planePosition(3)); 
+        fprintf(fid, 'Dip: %.4f degrees\n', dip); 
+        fprintf(fid, 'Dip Direction: %.4f degrees\n', dipDir); 
+        fprintf(fid, '\nPlane 2:\n'); 
+        fprintf(fid, 'Position (X, Y, Z): %.4f, %.4f, %.4f\n', planePosition2(1), planePosition2(2), planePosition2(3)); 
+        fprintf(fid, 'Dip: %.4f degrees\n', dip); 
+        fprintf(fid, 'Dip Direction: %.4f degrees\n', dipDir); 
+        fprintf(fid, '\nDistance: %.4f meters\n', planeDistance); 
+        fprintf(fid, '\nPoint Cloud Rotation angle: %.4f degrees\n', rotation_angle_deg); 
+        fprintf(fid, 'Target Axis: %s\n', targetAxis); 
          
-    combined_T = tform_align.T * tform_trans.T;
-    tform_combined = affinetform3d(combined_T);     
-         
-    % tform_back is the inverse of the total automatic alignment/translation     
-    tform_back = invert(tform_combined);     
-else 
-    % Store the inverse transformation for rotating back later 
-    tform_back = invert(tform_align); 
-end 
- 
-% Save to file 
-fprintf('Saving plane coordinates...\n');
-paramFile = fullfile(folder, name + "_Plane_coords.txt"); 
-fid = fopen(paramFile, 'w'); 
-if fid ~= -1 
-    fprintf(fid, 'Plane 1:\n'); 
-    fprintf(fid, 'Position (X, Y, Z): %.4f, %.4f, %.4f\n', planePosition(1), planePosition(2), planePosition(3)); 
-    fprintf(fid, 'Dip: %.4f degrees\n', dip); 
-    fprintf(fid, 'Dip Direction: %.4f degrees\n', dipDir); 
-    fprintf(fid, '\nPlane 2:\n'); 
-    fprintf(fid, 'Position (X, Y, Z): %.4f, %.4f, %.4f\n', planePosition2(1), planePosition2(2), planePosition2(3)); 
-    fprintf(fid, 'Dip: %.4f degrees\n', dip); 
-    fprintf(fid, 'Dip Direction: %.4f degrees\n', dipDir); 
-    fprintf(fid, '\nDistance: %.4f meters\n', planeDistance); 
-    fprintf(fid, '\nPoint Cloud Rotation angle: %.4f degrees\n', rotation_angle_deg); 
-    fprintf(fid, 'Target Axis: %s\n', targetAxis); 
+        fprintf(fid, '\n--- Alignment Transformation Info ---\n');     
+        fprintf(fid, 'Rotation Matrix (R):\n');     
+        fprintf(fid, '%.6f %.6f %.6f\n', R(1,:));     
+        fprintf(fid, '%.6f %.6f %.6f\n', R(2,:));     
+        fprintf(fid, '%.6f %.6f %.6f\n', R(3,:));     
+             
+        fprintf(fid, 'Translation Vector (Post-Rotation): %.6f, %.6f, %.6f\n', translation_vec);     
+             
+        fclose(fid);      
+        fprintf('Plane coordinates saved to %s\n', paramFile);      
+    else 
+        fprintf('Error: Could not open %s for writing.\n', paramFile); 
+    end 
      
-    fprintf(fid, '\n--- Alignment Transformation Info ---\n');     
-    fprintf(fid, 'Rotation Matrix (R):\n');     
-    fprintf(fid, '%.6f %.6f %.6f\n', R(1,:));     
-    fprintf(fid, '%.6f %.6f %.6f\n', R(2,:));     
-    fprintf(fid, '%.6f %.6f %.6f\n', R(3,:));     
-         
-    fprintf(fid, 'Translation Vector (Post-Rotation): %.6f, %.6f, %.6f\n', translation_vec);     
-         
-    fclose(fid);      
-    fprintf('Plane coordinates saved to %s\n', paramFile);      
-else 
-    fprintf('Error: Could not open %s for writing.\n', paramFile); 
-end 
+    %% OPTIONAL MANUAL ROTATION 
+    fprintf('\n=== MANUAL ROTATION ===\n');
+    % Allow user to perform an additional rotation interactively 
+    [tform_manual, goBackToPlane] = interactiveRotationSelector(ptCloud_rotated);
+    if goBackToPlane
+        fprintf('Returning to plane selection...\n');
+        continue;
+    end
+    ptCloud_rotated = pctransform(ptCloud_rotated, tform_manual);
+    break;
+end
  
-%% OPTIONAL MANUAL ROTATION 
-fprintf('\n=== MANUAL ROTATION ===\n');
-% Allow user to perform an additional rotation interactively 
-tform_manual = interactiveRotationSelector(ptCloud_rotated); 
-ptCloud_rotated = pctransform(ptCloud_rotated, tform_manual); 
- 
-% Update the inverse transform to include the manual rotation 
-% Correct order for inverse: inv(T_total) = inv(T_manual) * inv(T_align) 
-tform_back = affinetform3d(invert(tform_manual).T * tform_back.T);
  
 figure(2)
 pcshow(ptCloud_rotated);
@@ -801,7 +819,7 @@ if isfield(params, 'skipAutoInverse') && params.skipAutoInverse
     fprintf('Skipping Automatic Inverse Rotation (Alignment).\n');
 else
     fprintf('Applying inverse automatic rotation...\n');
-    TR_rotated_points = transformPointsForward(invert(tform_align), TR_rotated_points);
+    TR_rotated_points = transformPointsForward(tform_back, TR_rotated_points); % undoes alignment and translation
 end
 
 TR_rotated = triangulation(TR.ConnectivityList, TR_rotated_points);
@@ -908,6 +926,7 @@ btn_ok = uicontrol('Style', 'pushbutton', 'String', 'Start Processing', ...
     'Callback', @confirm);   
    
 % Wait for user interaction   
+addVerticalScroll(fig);
 uiwait(fig);   
    
 % Check if we have a valid selection after wait   
@@ -960,7 +979,13 @@ end
 end 
  
 %% INTERACTIVE PLANE SELECTOR FUNCTION 
-function [planePosition, planeNormal, finalDistance, targetAxis] = interactivePlaneSelector(x, y, z, initialDistance, colorData, useRGB) 
+function [planePosition, planeNormal, finalDistance, targetAxis, planeState] = interactivePlaneSelector(x, y, z, initialDistance, colorData, useRGB, initialState, lastPlaneFile)
+% initialState (optional): planeState returned by a previous call, used to
+% reopen the selector with the same position, rotation, distance and axis.
+% lastPlaneFile (optional): .mat file with the planeState confirmed in the
+% previous run, loaded by the "Load Last Planes" button.
+if nargin < 7, initialState = []; end
+if nargin < 8, lastPlaneFile = ''; end
 % Create figure for interactive plane selection 
 fig = figure('Name', 'Interactive Plane Selector', 'NumberTitle', 'off', ... 
     'Position', [100 100 1400 800]); 
@@ -1009,9 +1034,15 @@ end
 centroid = [mean(x_clean), mean(y_clean), mean(z_clean)]; 
 planePos = centroid; 
 rotationAngle = 0; % Rotation around Z-axis in degrees 
-planeDistance = initialDistance; % Editable distance 
-targetAxis = 'Minimal'; % Default vertical alignment axis 
- 
+planeDistance = initialDistance; % Editable distance
+targetAxis = 'Minimal'; % Default vertical alignment axis
+if ~isempty(initialState)
+    planePos = initialState.position;
+    rotationAngle = initialState.rotationAngle;
+    planeDistance = initialState.distance;
+    targetAxis = initialState.targetAxis;
+end
+
 % Calculate plane size for visualization 
 rangeX = max(x_clean) - min(x_clean); 
 rangeY = max(y_clean) - min(y_clean); 
@@ -1024,17 +1055,21 @@ panel_pos_y_start = 750; panel_x_start = 1120;
 uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start 200 20], ... 
     'String', 'Plane Rotation (Z-axis)', 'FontSize', 10, 'FontWeight', 'bold'); 
 rotSlider = uicontrol('Style', 'slider', 'Position', [panel_x_start panel_pos_y_start-30 200 20], ... 
-    'Min', -180, 'Max', 180, 'Value', 0, ... 
-    'Callback', @updatePlaneRotation); 
-rotText = uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-55 200 20], ... 
-    'String', sprintf('Angle: %.1f°', 0), 'FontSize', 9); 
+    'Min', -180, 'Max', 180, 'Value', rotationAngle, ...
+    'Callback', @updatePlaneRotation);
+rotEdit = uicontrol('Style', 'edit', 'Position', [panel_x_start+205 panel_pos_y_start-32 60 25], ...
+    'String', sprintf('%.1f', rotationAngle), 'FontSize', 9, ...
+    'TooltipString', 'Plane rotation in degrees (-180 to 180)', ...
+    'Callback', @updateRotationFromEdit);
+rotText = uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-55 200 20], ...
+    'String', sprintf('Angle: %.1f°', rotationAngle), 'FontSize', 9);
  
 % Distance control 
 uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-90 200 20], ... 
     'String', 'Distance Between Planes (in meters)', 'FontSize', 10, 'FontWeight', 'bold'); 
 maxRange = max(rangeX, rangeY); 
 distSlider = uicontrol('Style', 'slider', 'Position', [panel_x_start panel_pos_y_start-120 200 20], ... 
-    'Min', 1, 'Max', maxRange, 'Value', planeDistance, ... 
+    'Min', 1, 'Max', max(maxRange, planeDistance), 'Value', planeDistance, ... 
     'Callback', @updatePlaneDistance); 
 distText = uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-145 200 20], ... 
     'String', sprintf('Distance: %.1f m', planeDistance), 'FontSize', 9); 
@@ -1051,13 +1086,13 @@ uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-255 20 2
 posEditX = uicontrol('Style', 'edit', 'Position', [panel_x_start+25 panel_pos_y_start-255 100 25], ... 
     'String', sprintf('%.2f', planePos(1)), 'FontSize', 9, 'Callback', @updatePositionFromEdit); 
 posSliderX = uicontrol('Style', 'slider', 'Position', [panel_x_start+130 panel_pos_y_start-255 100 20], ... 
-    'Min', min(x_clean), 'Max', max(x_clean), 'Value', planePos(1), ... 
+    'Min', min(x_clean), 'Max', max(x_clean), 'Value', min(max(planePos(1), min(x_clean)), max(x_clean)), ... 
     'SliderStep', [0.0001 0.001], 'Callback', @updatePositionFromSliderX); 
 uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-285 20 20], 'String', 'Y:', 'FontSize', 9, 'HorizontalAlignment', 'left'); 
 posEditY = uicontrol('Style', 'edit', 'Position', [panel_x_start+25 panel_pos_y_start-285 100 25], ... 
     'String', sprintf('%.2f', planePos(2)), 'FontSize', 9, 'Callback', @updatePositionFromEdit); 
 posSliderY = uicontrol('Style', 'slider', 'Position', [panel_x_start+130 panel_pos_y_start-285 100 20], ... 
-    'Min', min(y_clean), 'Max', max(y_clean), 'Value', planePos(2), ... 
+    'Min', min(y_clean), 'Max', max(y_clean), 'Value', min(max(planePos(2), min(y_clean)), max(y_clean)), ... 
     'SliderStep', [0.0001 0.001], 'Callback', @updatePositionFromSliderY); 
  
 % Alignment Axis Selection 
@@ -1065,9 +1100,9 @@ uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-370 200 
     'String', 'Align Vertical With:', 'FontSize', 10, 'FontWeight', 'bold'); 
 axisGroup = uibuttongroup('Parent', fig, 'Units', 'pixels', 'Position', [panel_x_start panel_pos_y_start-415 250 40], ... 
     'BorderType', 'none', 'SelectionChangedFcn', @updateAxisSelection); 
-uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'Y-axis', 'Position', [10 5 60 25]); 
-uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'X-axis', 'Position', [70 5 60 25]); 
-uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'Minimal', 'Position', [130 5 70 25], 'Value', 1); 
+axisRadio.Y = uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'Y-axis', 'Position', [10 5 60 25], 'Value', strcmp(targetAxis, 'Y'));
+axisRadio.X = uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'X-axis', 'Position', [70 5 60 25], 'Value', strcmp(targetAxis, 'X'));
+axisRadio.Minimal = uicontrol(axisGroup, 'Style', 'radiobutton', 'String', 'Minimal', 'Position', [130 5 70 25], 'Value', strcmp(targetAxis, 'Minimal'));
  
 % Point count display 
 pointCountText = uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-475 270 60], ... 
@@ -1075,10 +1110,16 @@ pointCountText = uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos
  
 % Confirm button 
 uicontrol('Style', 'pushbutton', 'Position', [panel_x_start panel_pos_y_start-530 200 40], ... 
-    'String', 'Confirm Selection', 'FontSize', 12, 'Callback', @confirmSelection); 
- 
-% Instructions 
-uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-625 200 80], ... 
+    'String', 'Confirm Selection', 'FontSize', 12, 'Callback', @confirmSelection);
+
+% Load the planes confirmed in the previous run
+uicontrol('Style', 'pushbutton', 'Position', [panel_x_start panel_pos_y_start-580 200 35], ...
+    'String', 'Load Last Planes', 'FontSize', 10, ...
+    'TooltipString', 'Restore position, rotation, distance and axis used last time', ...
+    'Callback', @loadLastPlanes);
+
+% Instructions
+uicontrol('Style', 'text', 'Position', [panel_x_start panel_pos_y_start-680 200 80], ...
     'String', 'Instructions: Drag arrows to move plane. Use sliders or enter values to adjust rotation, distance, and position. Select alignment axis.', ... 
     'FontSize', 9, 'HorizontalAlignment', 'left'); 
  
@@ -1090,15 +1131,18 @@ arrowHandles = struct();
 updatePlaneVisualization(); 
  
 % Wait for user confirmation 
+addVerticalScroll(fig);
 uiwait(fig); 
  
 % Return final values 
 finalDistance = planeDistance; 
 planePosition = planePos; 
-planeNormal = calculatePlaneNormal(); 
- 
-% --- Nested Functions --- 
-    function updateAxisSelection(~, event) 
+planeNormal = calculatePlaneNormal();
+planeState = struct('position', planePos, 'rotationAngle', rotationAngle, ...
+    'distance', planeDistance, 'targetAxis', targetAxis);
+
+% --- Nested Functions ---
+    function updateAxisSelection(~, event)
         selected = get(event.NewValue, 'String'); 
         if strcmp(selected, 'X-axis') 
             targetAxis = 'X'; 
@@ -1116,10 +1160,25 @@ planeNormal = calculatePlaneNormal();
     end          
   
     function updatePlaneRotation(src, ~)          
-        rotationAngle = get(src, 'Value');          
-        set(rotText, 'String', sprintf('Angle: %.1f°', rotationAngle));          
-        updatePlaneVisualization();          
-    end          
+        rotationAngle = get(src, 'Value');
+        set(rotText, 'String', sprintf('Angle: %.1f°', rotationAngle));
+        set(rotEdit, 'String', sprintf('%.1f', rotationAngle));
+        updatePlaneVisualization();
+    end
+
+    function updateRotationFromEdit(src, ~)
+        newAngle = str2double(get(src, 'String'));
+        if isnan(newAngle)
+            set(src, 'String', sprintf('%.1f', rotationAngle));
+            return;
+        end
+        % Wrap into the slider range [-180, 180]
+        rotationAngle = mod(newAngle + 180, 360) - 180;
+        set(src, 'String', sprintf('%.1f', rotationAngle));
+        set(rotSlider, 'Value', rotationAngle);
+        set(rotText, 'String', sprintf('Angle: %.1f°', rotationAngle));
+        updatePlaneVisualization();
+    end
   
     function updatePlaneDistance(src, ~)          
         planeDistance = get(src, 'Value');          
@@ -1241,11 +1300,51 @@ planeNormal = calculatePlaneNormal();
     function moveY(~, ~), pt = get(ax, 'CurrentPoint'); planePos(2) = pt(1,2); updatePlaneVisualization(); end          
     function moveZ(~, ~), pt = get(ax, 'CurrentPoint'); planePos(3) = pt(1,3); updatePlaneVisualization(); end          
   
-    function confirmSelection(~, ~)          
-        uiresume(fig);          
-        close(fig);          
-    end          
-end 
+    function confirmSelection(~, ~)
+        uiresume(fig);
+        close(fig);
+    end
+
+    function loadLastPlanes(~, ~)
+        if isempty(lastPlaneFile) || ~isfile(lastPlaneFile)
+            warning('No saved planes found (%s). Confirm a plane once to create it.', lastPlaneFile);
+            warndlg('No saved planes found. Confirm a plane once to create them.', 'Load Last Planes');
+            return;
+        end
+        try
+            S = load(lastPlaneFile, 'planeState');
+            st = S.planeState;
+            planePos = st.position;
+            rotationAngle = st.rotationAngle;
+            planeDistance = st.distance;
+            targetAxis = st.targetAxis;
+        catch ME
+            warning('Could not read %s: %s', lastPlaneFile, ME.message);
+            warndlg('The saved planes file could not be read.', 'Load Last Planes');
+            return;
+        end
+
+        % Rotation controls
+        set(rotSlider, 'Value', rotationAngle);
+        set(rotEdit, 'String', sprintf('%.1f', rotationAngle));
+        set(rotText, 'String', sprintf('Angle: %.1f°', rotationAngle));
+
+        % Distance controls (extend slider range if needed)
+        if planeDistance > get(distSlider, 'Max'), set(distSlider, 'Max', planeDistance * 1.2); end
+        set(distSlider, 'Value', max(planeDistance, get(distSlider, 'Min')));
+        set(distText, 'String', sprintf('Distance: %.1f m', planeDistance));
+        set(distEdit, 'String', sprintf('%.1f', planeDistance));
+
+        % Alignment axis
+        if isfield(axisRadio, targetAxis)
+            set(axisGroup, 'SelectedObject', axisRadio.(targetAxis));
+        end
+
+        % Position edits/sliders and planes are refreshed here
+        updatePlaneVisualization();
+        fprintf('Loaded last planes from %s\n', lastPlaneFile);
+    end
+end
  
 %% FILTER BY EDGE LENGTH
 function [faces_t] = filter_by_length(T_filtered, x_filtered, y_filtered, max_edge_length) 
@@ -1281,7 +1380,8 @@ faces_t = T_filtered(valid_triangles, :);
 end 
  
 %% INTERACTIVE ROTATION SELECTOR
-function tform_manual = interactiveRotationSelector(ptCloud) 
+function [tform_manual, goBack] = interactiveRotationSelector(ptCloud)
+% goBack = true when the user asks to return to the plane selection
 % Create a figure for interactive rotation selection 
 fig = figure('Name', 'Interactive Rotation Selector', 'NumberTitle', 'off', ... 
     'Position', [200 200 1000 700]); 
@@ -1300,7 +1400,8 @@ rotate3d(ax, 'on');
 % Initial rotation parameters 
 rotationAxis = [0 0 1]; % Default axis 
 rotationAngle = 0; % Default angle in degrees 
-tform_manual = affinetform3d(eye(4)); % Default transform (identity) 
+tform_manual = affinetform3d(eye(4)); % Default transform (identity)
+goBack = false;
  
 % --- UI Controls --- 
 panel_pos_y_start = 650; 
@@ -1328,15 +1429,20 @@ translateCheckbox = uicontrol('Style', 'checkbox', 'Position', [750 panel_pos_y_
  
 % Confirm button 
 uicontrol('Style', 'pushbutton', 'Position', [750 panel_pos_y_start-300 200 40], ... 
-    'String', 'Confirm Rotation', 'FontSize', 12, 'Callback', @confirmSelection); 
- 
-% Storage for graphics objects 
-axisHandle = []; 
+    'String', 'Confirm Rotation', 'FontSize', 12, 'Callback', @confirmSelection);
+
+% Back button: discard this cut and choose the plane again
+uicontrol('Style', 'pushbutton', 'Position', [750 panel_pos_y_start-350 200 40], ...
+    'String', '< Back to Plane Selection', 'FontSize', 10, 'Callback', @backToPlaneSelection);
+
+% Storage for graphics objects
+axisHandle = [];
  
 % Initial visualization 
 updateVisualization(); 
  
 % Wait for user to confirm 
+addVerticalScroll(fig);
 uiwait(fig); 
  
 % --- Nested Functions --- 
@@ -1402,7 +1508,7 @@ uiwait(fig);
         % Create rotation matrix          
         R_manual = axang2rotm([rotationAxis deg2rad(rotationAngle)]);          
         affine_matrix_manual = eye(4);          
-        affine_matrix_manual(1:3, 1:3) = R_manual';
+        affine_matrix_manual(1:3, 1:3) = R_manual; % affinetform3d uses column vectors
                   
         % Check if translation is needed          
         if get(translateCheckbox, 'Value') == 1          
@@ -1413,16 +1519,22 @@ uiwait(fig);
             minZ = min(rotated_pts(:,3));          
             % Add translation to the matrix          
             translation_vec = [0, 0, -minZ];          
-            affine_matrix_manual(4, 1:3) = translation_vec;          
+            affine_matrix_manual(1:3, 4) = translation_vec(:);          
         end          
                   
         % Create the final combined transformation          
-        tform_manual = affinetform3d(affine_matrix_manual);          
-                  
-        uiresume(fig);          
-        close(fig);          
-    end          
-end 
+        tform_manual = affinetform3d(affine_matrix_manual);
+
+        uiresume(fig);
+        close(fig);
+    end
+
+    function backToPlaneSelection(~, ~)
+        goBack = true;
+        uiresume(fig);
+        close(fig);
+    end
+end
  
 %% UTILITY
 function s = choose_str(condition, a, b)
@@ -2105,6 +2217,7 @@ uicontrol(bg, 'Style', 'radiobutton', 'Position', [10 8 360 24], ...
 uicontrol('Style', 'pushbutton', 'Position', [135 15 150 35], ...
     'String', 'Continue', 'FontSize', 11, 'Callback', @confirm);
 
+addVerticalScroll(fig);
 uiwait(fig);
 if ishandle(fig), delete(fig); end
 
@@ -2234,6 +2347,7 @@ y = y - sp - 4;
 uicontrol('Style', 'pushbutton', 'Position', [150 y 200 38], 'String', 'Start Processing', ...
     'FontSize', 12, 'Callback', @startProcessing);
 
+addVerticalScroll(fig);
 uiwait(fig);
 
     function toggleTrimmer(src,~)
@@ -2407,6 +2521,7 @@ y = y - sp - 4;
 uicontrol('Style', 'pushbutton', 'Position', [160 y 200 38], 'String', 'Start Processing', ...
     'FontSize', 12, 'Callback', @startProcessing);
 
+addVerticalScroll(fig);
 uiwait(fig);
 
     function toggleSolid(src,~)
@@ -2763,5 +2878,94 @@ function startProcessing(~, ~)
 end
 
 % Wait for user input
+addVerticalScroll(fig);
 uiwait(fig);
+end
+
+%% SCROLLABLE FIGURE
+function addVerticalScroll(fig)
+% If the figure is taller than the screen, shrink it to fit and move its
+% content into a panel that scrolls with a slider on the right side
+% (and the mouse wheel, when the pointer is not over an axes).
+sliderW = 18;
+screenMargin = 120;   % room for taskbar, title bar and menu/toolbar
+
+set(fig, 'Units', 'pixels');
+figPos = get(fig, 'Position');
+screen = get(0, 'ScreenSize');
+maxH = screen(4) - screenMargin;
+if figPos(4) <= maxH
+    return;
+end
+
+contentW = figPos(3);
+contentH = figPos(4);
+
+% Move all layout children into a panel with the original figure size,
+% so pixel and normalized positions stay exactly as designed
+content = uipanel('Parent', fig, 'Units', 'pixels', 'BorderType', 'none', ...
+    'Position', [0 0 contentW contentH]);
+movable = {'uicontrol', 'axes', 'uipanel', 'uibuttongroup', 'uitable'};
+kids = get(fig, 'Children');
+for k = 1:numel(kids)
+    if kids(k) ~= content && any(strcmp(get(kids(k), 'Type'), movable))
+        set(kids(k), 'Parent', content);
+    end
+end
+
+scrollBar = uicontrol('Parent', fig, 'Style', 'slider', 'Units', 'pixels', ...
+    'Callback', @(~, ~) applyScroll());
+addlistener(scrollBar, 'ContinuousValueChange', @(~, ~) applyScroll());
+
+% Fit the window to the screen, keeping the top edge visible
+set(fig, 'Position', [figPos(1), screenMargin / 2, contentW + sliderW, maxH]);
+
+layout();
+set(fig, 'SizeChangedFcn', @(~, ~) layout());
+if isempty(get(fig, 'WindowScrollWheelFcn'))
+    set(fig, 'WindowScrollWheelFcn', @onWheel);
+end
+
+    function layout()
+        pos = get(fig, 'Position');
+        viewH = pos(4);
+        set(content, 'Position', [0, 0, max(contentW, pos(3) - sliderW), contentH]);
+        set(scrollBar, 'Position', [pos(3) - sliderW, 0, sliderW, viewH]);
+        scrollRange = contentH - viewH;
+        if scrollRange > 0
+            set(scrollBar, 'Enable', 'on', 'Min', 0, 'Max', scrollRange, ...
+                'Value', scrollRange, ...   % start at the top
+                'SliderStep', [min(1, 40 / scrollRange), min(1, viewH / scrollRange)]);
+        else
+            set(scrollBar, 'Enable', 'off', 'Min', 0, 'Max', 1, 'Value', 1);
+        end
+        applyScroll();
+    end
+
+    function applyScroll()
+        pos = get(fig, 'Position');
+        if strcmp(get(scrollBar, 'Enable'), 'on')
+            offset = -get(scrollBar, 'Value');
+        else
+            offset = pos(4) - contentH;   % content fits: align to top
+        end
+        contentPos = get(content, 'Position');
+        set(content, 'Position', [0, offset, contentPos(3), contentH]);
+    end
+
+    function onWheel(~, evt)
+        if strcmp(get(scrollBar, 'Enable'), 'off')
+            return;
+        end
+        % Leave the wheel to the axes (3D zoom) when the pointer is over one
+        try
+            if ~isempty(ancestor(hittest(fig), 'axes'))
+                return;
+            end
+        catch
+        end
+        newVal = get(scrollBar, 'Value') - evt.VerticalScrollCount * 40;
+        set(scrollBar, 'Value', min(max(newVal, get(scrollBar, 'Min')), get(scrollBar, 'Max')));
+        applyScroll();
+    end
 end
